@@ -1,0 +1,34 @@
+
+# Visual Studio
+.vs/
+*.sln
+*.suo
+*.user
+
+# Build directories
+build/
+out/
+Debug/
+Release/
+x64/
+x86/
+
+# Dependencies
+vcpkg_installed/
+
+# Compiled files
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# IDE
+.idea/
+.vscode/
