@@ -1,4 +1,3 @@
-```powershell
 # ==========================================
 # Ray Tracer - GLFW Window Build Script
 # ==========================================
@@ -26,4 +25,3 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "`nStarting Ray Tracer Window..." -ForegroundColor Green
 
 & ".\build\Release\renderer.exe"
-```

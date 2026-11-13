@@ -1,5 +1,9 @@
 
 #include <iostream>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <glad/glad.h>
@@ -55,7 +59,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 
     cam.update_rotate(
         xoffset * sensitivity,
-        yoffset * sensitivity
+        -yoffset * sensitivity
     );
 
     cameraIsChanged = true;
@@ -155,13 +159,25 @@ int main()
     const int IMAGE_WIDTH = 400;
     const int IMAGE_HEIGHT = 225;
 
-    std::cout << "Rendering initial image...\n";
+    std::cout << "Rendering initial image in the background...\n";
 
-    std::vector<unsigned char> pixels =
-        render_image(IMAGE_WIDTH, IMAGE_HEIGHT, cam);
+    std::vector<unsigned char> pixels(
+        static_cast<size_t>(IMAGE_WIDTH) * IMAGE_HEIGHT * 3, 0);
 
-    std::cout << "Rendering completed!\n";
-    std::cout << "Pixel count: " << pixels.size() << '\n';
+    // Display a sky-colored placeholder until the first background render completes.
+    for (int y = 0; y < IMAGE_HEIGHT; ++y) {
+        const double blend = static_cast<double>(y) / (IMAGE_HEIGHT - 1);
+        const unsigned char red = static_cast<unsigned char>(255.0 - 128.0 * blend);
+        const unsigned char green = static_cast<unsigned char>(255.0 - 76.0 * blend);
+        const unsigned char blue = static_cast<unsigned char>(255.0 - 0.0 * blend);
+
+        for (int x = 0; x < IMAGE_WIDTH; ++x) {
+            const size_t offset = (static_cast<size_t>(y) * IMAGE_WIDTH + x) * 3;
+            pixels[offset] = red;
+            pixels[offset + 1] = green;
+            pixels[offset + 2] = blue;
+        }
+    }
 
     // ==========================================
     // Create OpenGL texture
@@ -191,6 +207,42 @@ int main()
         GL_UNSIGNED_BYTE,
         pixels.data()
     );
+
+    std::mutex renderMutex;
+    std::condition_variable renderCondition;
+    camera requestedCamera = cam;
+    std::vector<unsigned char> completedPixels;
+    bool renderRequested = true;
+    bool renderResultReady = false;
+    bool stopRenderer = false;
+
+    std::thread renderThread([&]() {
+        while (true) {
+            {
+                std::unique_lock lock(renderMutex);
+                renderCondition.wait(lock, [&]() {
+                    return renderRequested || stopRenderer;
+                });
+
+                if (stopRenderer && !renderRequested)
+                    return;
+
+                camera cameraSnapshot = requestedCamera;
+                renderRequested = false;
+
+                lock.unlock();
+
+                auto renderedPixels = render_image(
+                    IMAGE_WIDTH,
+                    IMAGE_HEIGHT,
+                    cameraSnapshot);
+
+                lock.lock();
+                completedPixels = std::move(renderedPixels);
+                renderResultReady = true;
+            }
+        }
+    });
 
     // ==========================================
     // Compile shaders
@@ -334,28 +386,35 @@ int main()
 
         if (cameraIsChanged)
         {
-            std::cout << "\nRendering new camera view...\n";
-
-            pixels = render_image(
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                cam
-            );
-
-            glBindTexture(GL_TEXTURE_2D, texture);
-
-            glTexSubImage2D(
-                GL_TEXTURE_2D,
-                0,
-                0, 0,
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                GL_RGB,
-                GL_UNSIGNED_BYTE,
-                pixels.data()
-            );
+            {
+                std::lock_guard lock(renderMutex);
+                requestedCamera = cam;
+                renderRequested = true;
+            }
+            renderCondition.notify_one();
 
             cameraIsChanged = false;
+        }
+
+        // Upload completed renders only on the OpenGL thread.
+        {
+            std::lock_guard lock(renderMutex);
+            if (renderResultReady) {
+                pixels = std::move(completedPixels);
+                renderResultReady = false;
+
+                glBindTexture(GL_TEXTURE_2D, texture);
+                glTexSubImage2D(
+                    GL_TEXTURE_2D,
+                    0,
+                    0, 0,
+                    IMAGE_WIDTH,
+                    IMAGE_HEIGHT,
+                    GL_RGB,
+                    GL_UNSIGNED_BYTE,
+                    pixels.data()
+                );
+            }
         }
 
         // --------------------------------------
@@ -379,6 +438,14 @@ int main()
 
         glfwSwapBuffers(window);
     }
+
+    {
+        std::lock_guard lock(renderMutex);
+        stopRenderer = true;
+        renderRequested = false;
+    }
+    renderCondition.notify_one();
+    renderThread.join();
 
     // ==========================================
     // Cleanup
